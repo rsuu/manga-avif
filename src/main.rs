@@ -17,206 +17,201 @@ use zip::{write::FileOptions, ZipArchive, ZipWriter};
 const AVIF_EXT: &str = "avif";
 
 fn main() {
-    let mut args = Args::new();
+    let args = Args::new();
     args.start();
 }
 
+pub struct Args {
+    src: PathBuf,
+    dst: PathBuf,
+
+    src_ty: ArchiveType,
+    dst_ty: ArchiveType,
+
+    speed: u8,
+    quality: u8,
+    depth: u8,
+
+    flag_force: bool,
+    num_threads: usize,
+}
+
+#[derive(PartialEq)]
+pub enum ArchiveType {
+    // `filename.{zip, cbz}`
+    Zip,
+
+    // `-`
+    Pipe,
+
+    // `path/`
+    Dir,
+
+    Unknown,
+}
+
 pub struct Item {
-    pub path: String,
-    pub data: Vec<u8>,
+    pub path: PathBuf,
+    pub data: DataTy,
+}
+
+pub enum DataTy {
+    File(Vec<u8>),
+    Dir,
 }
 
 impl Args {
-    fn start(&mut self) {
-        if self.archive_ty == ArchiveType::Unknown {
+    fn start(&self) {
+        if self.src_ty == ArchiveType::Unknown || self.dst_ty == ArchiveType::Unknown {
             unimplemented!()
         }
 
-        let path = Path::new(self.path.as_str());
-
-        // TODO:
-        // from: zip file
-        if let Some(ext) = path.extension() {
-            let ext = ext.to_str().unwrap();
-
-            if ext.ends_with(".zip") || ext.ends_with(".cbz") {
-                self.from_zip();
-            }
-
-        // from: pipe
-        } else if path == Path::new("-") {
-            self.from_pipe();
-        } else {
-            self.from_dir();
+        match self.src_ty {
+            ArchiveType::Dir => self.from_dir(),
+            //ArchiveType::Pipe => self.from_pipe(),
+            //ArchiveType::Zip => self.from_zip(),
+            _ => todo!(),
         }
-        // TODO: from: http
     }
 
-    fn from_dir(&mut self) {
-        let path = self.path.as_str();
-        self.list = get_filelist(path.as_ref());
-        let fpath = path.to_string();
-        let dir = self.dir.as_str();
+    fn from_dir(&self) {
+        //dbg!("from_dir()");
 
-        dbg!(&self.list);
+        match self.dst_ty {
+            ArchiveType::Zip => {
+                if self.dst.exists() {
+                    if self.flag_force {
+                        fs::remove_file(self.dst.as_path()).unwrap();
+                    } else {
+                        eprintln!("Error: exitis {}", self.dst.display());
 
-        let dst = match self.archive_ty {
-            ArchiveType::Zip => format!("{dir}/{fpath}.cbz"),
+                        std::process::exit(-1);
+                    }
+                }
+
+                self.to_zip();
+            }
             _ => unimplemented!(),
-        };
-
-        //
-        if Path::new(dst.as_str()).is_file() {
-            println!("SKIP: {dst}");
-
-            std::process::exit(0);
-        }
-
-        //
-
-        self.dst = dst;
-
-        if self.dst.ends_with(".cbz") {
-            self.to_cbz();
         }
     }
 
-    fn from_zip(&self) {}
-    fn from_pipe(&self) {
-        let mut buffer = Vec::new();
-        let stdin = io::stdin();
-        let mut handle = stdin.lock();
+    //    fn from_zip(&self) {}
+    //    fn from_pipe(&self) {
+    //        let mut buffer = Vec::new();
+    //        let stdin = io::stdin();
+    //        let mut handle = stdin.lock();
+    //
+    //        handle.read_to_end(&mut buffer).unwrap();
+    //
+    //        let mut res = vec![];
+    //
+    //        if infer::is(&buffer, "zip") {
+    //            println!("zip");
+    //
+    //            let mut zip = ZipArchive::new(Cursor::new(&buffer)).unwrap();
+    //            let len = zip.len();
+    //
+    //            for idx in 0..len {
+    //                let mut f = zip.by_index(idx).unwrap();
+    //                let fname = f.name().to_string();
+    //
+    //                let mut data = Vec::new();
+    //                f.read_to_end(&mut data).unwrap();
+    //
+    //                res.push((fname, data));
+    //            }
+    //
+    //            dbg!(zip.len());
+    //        } else {
+    //            dbg!(buffer.len());
+    //        }
+    //
+    //        dbg!(res.len());
+    //
+    //        todo!()
+    //    }
 
-        handle.read_to_end(&mut buffer).unwrap();
+    fn to_zip(&self) {
+        //dbg!("to_zip()");
 
-        let mut res = vec![];
-
-        if infer::is(&buffer, "zip") {
-            println!("zip");
-
-            let mut zip = ZipArchive::new(Cursor::new(&buffer)).unwrap();
-            let len = zip.len();
-
-            for idx in 0..len {
-                let mut f = zip.by_index(idx).unwrap();
-                let fname = f.name().to_string();
-
-                let mut data = Vec::new();
-                f.read_to_end(&mut data).unwrap();
-
-                res.push((fname, data));
-            }
-
-            dbg!(zip.len());
-        } else {
-            dbg!(buffer.len());
-        }
-
-        dbg!(res.len());
-
-        todo!()
-    }
-
-    fn to_cbz(&mut self) {
         let Args {
-            path,
             speed,
             quality,
             depth,
-            list,
             ..
         } = self;
-        println!("START: {path}");
-
+        let list = get_filelist(self.src.as_ref());
         let vec = Arc::new(Mutex::new(Vec::with_capacity(list.len())));
 
         let f = |p: &PathBuf| {
             let vec = vec.clone();
             let mut vec = vec.lock().unwrap();
 
-            //dbg!(&p);
-            if let Ok(data) = img2avif(p.as_path(), *speed, *quality, *depth) {
+            if p.is_file() {
+                let data = img2avif(p.as_path(), *speed, *quality, *depth).unwrap();
+
                 // rename to avif
-                let mut img_path = p.to_path_buf();
-                img_path.set_extension(AVIF_EXT);
-
-                println!("DONE: {}", img_path.display());
+                let mut path = p.to_path_buf();
+                path.set_extension(AVIF_EXT);
 
                 vec.push(Item {
-                    path: img_path.display().to_string(),
-                    data,
-                })
+                    path,
+                    data: DataTy::File(data),
+                });
+            } else if p.is_dir() {
+                vec.push(Item {
+                    path: p.clone(),
+                    data: DataTy::Dir,
+                });
             } else {
-                vec.push(Item {
-                    path: p.display().to_string(),
-                    data: vec![],
-                })
+                unimplemented!()
             }
+
+            println!("\tDONE: {}", p.display());
         };
-        for v in list.chunks(2) {
+        for v in list.chunks(self.num_threads) {
             v.par_iter().map(f).collect::<()>();
         }
 
         let vec = vec.clone();
         let mut vec = vec.lock().unwrap();
 
-        'a: for Item { data, .. } in vec.iter() {
-            if data.is_empty() {
-                self.archive_ty = ArchiveType::Dir;
-                break 'a;
-            }
-        }
-
-        dbg!(vec.len());
-        match self.archive_ty {
-            ArchiveType::Zip => self.inner_to_cbz(&mut vec),
-
-            ArchiveType::Dir => self.inner_to_dir(&mut vec),
-
-            _ => {}
-        }
+        self.inner_to_zip(&mut vec);
     }
 
-    fn inner_to_dir(&self, vec: &mut [Item]) {
-        let Args { dir, path, .. } = self;
+    //    fn inner_to_dir(&self, vec: &mut [Item]) {
+    //        let Args { dir, path, .. } = self;
+    //
+    //        let dir_path = format!("./{dir}/{path}");
+    //        let dir_path = Path::new(&dir);
+    //
+    //        // WARN:
+    //        if dir_path.is_file() {
+    //            return;
+    //        }
+    //
+    //        // if exitis { do nothing }
+    //        let _ = fs::create_dir(dir_path);
+    //        println!("mkdir: {}", dir_path.display());
+    //
+    //        for Item { path, data } in vec.iter_mut() {
+    //            if data.is_empty() {
+    //                println!("WARN<missed>: {path}");
+    //                continue;
+    //            }
+    //
+    //            let dst = format!("{dir}/{path}");
+    //            dbg!(&dst);
+    //
+    //            let mut f = fs::File::create(dst).unwrap();
+    //            f.write_all(data.as_slice()).unwrap();
+    //        }
+    //
+    //        println!("DONE<DIR>: {path}");
+    //    }
 
-        let dir_path = format!("./{dir}/{path}");
-        let dir_path = Path::new(&dir);
-
-        // WARN:
-        if dir_path.is_file() {
-            return;
-        }
-
-        // if exitis { do nothing }
-        let _ = fs::create_dir(dir_path);
-        println!("mkdir: {}", dir_path.display());
-
-        for Item { path, data } in vec.iter_mut() {
-            if data.is_empty() {
-                println!("WARN<missed>: {path}");
-                continue;
-            }
-
-            let dst = format!("{dir}/{path}");
-            dbg!(&dst);
-
-            let mut f = fs::File::create(dst).unwrap();
-            f.write_all(data.as_slice()).unwrap();
-        }
-
-        println!("DONE<DIR>: {path}");
-    }
-
-    fn inner_to_cbz(&self, vec: &mut [Item]) {
-        let Args {
-            put_to,
-            addr,
-            port,
-
-            dst,
-            ..
-        } = self;
+    fn inner_to_zip(&self, vec: &mut [Item]) {
+        let Args { dst, .. } = self;
 
         let mut ar = Cursor::new(Vec::new());
         {
@@ -225,80 +220,32 @@ impl Args {
             let options = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
             for Item { path, data } in vec.iter_mut() {
-                println!("{}", data.len());
+                match data {
+                    DataTy::File(v) => {
+                        zip.start_file(path.display().to_string(), options).unwrap();
+                        zip.write_all(v.as_slice()).unwrap();
 
-                // zip
-                zip.start_file(path.as_str(), options).unwrap();
-                zip.write_all(data.as_slice()).unwrap();
+                        v.clear();
+                        v.shrink_to(0);
+                    }
 
-                data.clear();
-                data.shrink_to(0);
+                    DataTy::Dir => {
+                        zip.add_directory(path.display().to_string(), options)
+                            .unwrap();
+                    }
+                }
             }
+
             zip.finish().unwrap();
         }
 
         ar.seek(io::SeekFrom::Start(0)).unwrap();
 
-        // net
-        if let Some(path) = put_to {
-            let url = format!("http://{addr}:{port}/{path}/{dst}");
-            curl_put(ar, &url);
+        let data = ar.get_ref().as_slice();
+        fs::write(dst, data).unwrap();
 
-            println!("DONE<curl_put>: {url}");
-        // disk
-        } else {
-            let data = ar.get_ref().as_slice();
-            fs::write(dst, data).unwrap();
-
-            println!("DONE<cbz>: {dst}");
-        }
+        println!("DONE<cbz>: {}", dst.display());
     }
-}
-
-struct Args {
-    path: String,
-    put_to: Option<String>,
-    log_file: Option<String>,
-
-    dir: String,
-
-    speed: u8,
-    quality: u8,
-    depth: u8,
-    archive_ty: ArchiveType,
-
-    addr: String,
-    port: u16,
-
-    dst: String,
-    list: Vec<PathBuf>,
-}
-
-#[derive(PartialEq)]
-enum ArchiveType {
-    Zip,
-
-    Pipe,
-
-    Dir,
-
-    Unknown,
-}
-
-fn get_filelist(path: &Path) -> Vec<PathBuf> {
-    let mut res = Vec::new();
-    for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
-        if entry
-            .path()
-            .extension()
-            .is_some_and(|e| e == "jpg" || e == "jpeg" || e == "png" || e == "webp")
-        {
-            res.push(entry.path().to_path_buf());
-        }
-    }
-
-    res.sort();
-    res
 }
 
 fn img2avif(path: &Path, speed: u8, quality: u8, depth: u8) -> Result<Vec<u8>, ()> {
@@ -308,32 +255,26 @@ fn img2avif(path: &Path, speed: u8, quality: u8, depth: u8) -> Result<Vec<u8>, (
         .with_quality(quality as f32)
         .with_speed(speed);
 
-    println!("start: {}", path.display());
+    //dbg!("start: {}", path.display());
 
     // `?` vs `let else`
-    let Ok(img) = ImageReader::open(path) else {
-        return Err(());
-    };
-    let Ok(img) = img.decode() else {
-        return Err(());
-    };
+    let img = ImageReader::open(path).unwrap().decode().unwrap();
+    //dbg!(img.color());
 
     let width = img.width() as usize;
     let height = img.height() as usize;
 
-    dbg!(img.color());
-
     // NOTE: No as_rgba8(), because we MUST convert image color to rgba
     let buf = img.into_rgba8();
     let buf = buf.as_rgba();
+    //dbg!(buf.len());
 
-    dbg!(buf.len());
     let res = encode
         .encode_rgba(ravif::Img::new(buf, width, height))
         .unwrap()
         .avif_file
         .to_vec();
-    dbg!(res.len());
+    //dbg!(res.len());
 
     Ok(res)
 }
@@ -367,51 +308,69 @@ impl Args {
     fn new() -> Self {
         let mut args = Arguments::from_env();
 
-        // flag
-        let put_to = args.opt_value_from_str("--put-to").unwrap();
+        if args.contains("--help") {
+            print_help();
+        }
+        // file
+        let src: PathBuf = args.value_from_str("--src").unwrap();
+        let dst: PathBuf = args.value_from_str("--dst").unwrap();
+        let src_ty = {
+            if let Some(ext) = src.extension() {
+                ArchiveType::from(ext.to_str().unwrap())
+            } else if src.starts_with("http://") || src.starts_with("https://") {
+                // http
+                let addr = args
+                    .value_from_str("--addr")
+                    .unwrap_or("localhost".to_string());
+                let port = args.value_from_str("--port").unwrap_or(5000);
+
+                todo!()
+            } else {
+                ArchiveType::Dir
+            }
+        };
+        let dst_ty = {
+            if let Some(ext) = dst.extension() {
+                ArchiveType::from(ext.to_str().unwrap())
+            } else if src.starts_with("http://") || src.starts_with("https://") {
+                // http
+                let addr = args
+                    .value_from_str("--addr")
+                    .unwrap_or("localhost".to_string());
+                let port = args.value_from_str("--port").unwrap_or(5000);
+
+                todo!()
+            } else {
+                ArchiveType::Dir
+            }
+        };
+
+        // opt
 
         // img
         let speed = args.value_from_str("--speed").unwrap_or(4);
         let quality = args.value_from_str("--quality").unwrap_or(70);
         let depth = args.value_from_str("--depth").unwrap_or(10);
-        let archive_ty = args
-            .value_from_str("--ext")
-            .map(|f: String| ArchiveType::from(f.as_str()))
-            .unwrap();
 
-        // http
-        let addr = args
-            .value_from_str("--addr")
-            .unwrap_or("localhost".to_string());
-        let port = args.value_from_str("--port").unwrap_or(5000);
-
-        //
-        let log_file = args.opt_value_from_str("--log").unwrap();
-
-        // move to
-        let dir = args.value_from_str("--dir").unwrap_or(".".to_string());
-
-        // file
-        let path = args
-            .free_from_str::<String>()
-            .expect("Path argument is required");
+        // misc
+        let flag_force = args.contains("--force");
+        let num_threads = args.value_from_str("--threads").unwrap_or(8);
 
         let _ = args.finish();
 
         Self {
-            path,
+            src,
+            dst,
+
+            src_ty,
+            dst_ty,
+
             speed,
             quality,
-            dir,
-            log_file,
             depth,
-            put_to,
-            archive_ty,
-            addr,
-            port,
 
-            dst: "".to_string(),
-            list: vec![],
+            flag_force,
+            num_threads,
         }
     }
 }
@@ -453,4 +412,38 @@ impl From<&ArchiveType> for String {
         }
         .to_string()
     }
+}
+
+fn print_help() {
+    println!(
+        "
+--speed
+--quality
+--depth
+--ext
+--dir
+
+manga-avif
+  --speed 4 --quality 70 --depth 10
+  --ext cbz --dir ./
+  tests
+"
+    );
+    std::process::exit(0);
+}
+
+fn get_filelist(path: &Path) -> Vec<PathBuf> {
+    let mut res = Vec::new();
+    for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+        if entry
+            .path()
+            .extension()
+            .is_some_and(|e| e == "jpg" || e == "jpeg" || e == "png" || e == "webp")
+        {
+            res.push(entry.path().to_path_buf());
+        }
+    }
+
+    res.sort();
+    res
 }
